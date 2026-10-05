@@ -204,33 +204,41 @@ orphans = disk_files - log_files
 
 ## 5. Ước Lượng Chi Phí (Back-of-envelope)
 
-### Storage Cost
+### Storage Cost (AWS S3 Standard & S3 Standard-IA)
 
-| Tier | Volume | Duration | Compression | Size | $/TB-month | Cost/month |
+*Lưu ý đơn vị chuẩn AWS: S3 Standard là **$0.023/GB-tháng** = **$23/TB-tháng**; S3-IA là **$0.0125/GB-tháng** = **$12.50/TB-tháng**.*
+
+| Tier | Volume | Duration | Compression | Size lưu trữ | Đơn giá/TB-tháng | Chi phí/tháng |
 |---|---|---|---|---|---|---|
-| Bronze | 5 TB/day | 7 days | LZ4 1.5× | 23 TB | $0.023 (S3 Standard) | **$0.53** |
-| Silver | 4.8 TB/day | 30 days | Snappy 2× | 72 TB | $0.023 | **$1.66** |
-| Silver aged | 30-90 days | 60 days | Zstd 3× | 96 TB | $0.0125 (S3-IA) | **$1.20** |
-| Gold | 50 GB/day | 365 days | Zstd 4× | 4.6 TB | $0.023 | **$0.11** |
-| **Total Storage** | | | | ~200 TB | | **~$3.50/month** |
+| Bronze (Hot) | 5 TB/ngày | 7 ngày | LZ4 1.5× | 23.3 TB | $23.00 (S3 Standard) | **$536** |
+| Silver (Hot) | 4.8 TB/ngày | 30 ngày | Snappy 2× | 72.0 TB | $23.00 (S3 Standard) | **$1,656** |
+| Silver (Aged) | 30–90 ngày | 60 ngày | Zstd 3× | 96.0 TB | $12.50 (S3-IA) | **$1,200** |
+| Gold | 50 GB/ngày | 365 ngày | Zstd 4× | 4.6 TB | $23.00 (S3 Standard) | **$106** |
+| **Tổng Storage** | | | | **~196 TB** | | **~$3,498/tháng** |
 
-### Compute Cost (AWS EMR, spot instances)
+### Compute Cost (Spot Instances & Stream Processing)
 
-| Job | Frequency | Duration | Instances | Cost/run | Cost/month |
-|---|---|---|---|---|---|
-| Bronze ingest (Spark) | Continuous | 24h | 4× r5.2xlarge spot | $2.5/h × 4 = $10/h | $7,200 |
-| Silver micro-batch | Every 5 min | 2 min | 2× r5.xlarge spot | $0.05/run | $864 |
-| Gold aggregate | Every 5 min | 1 min | 2× r5.xlarge spot | $0.025/run | $432 |
-| Compaction cron | Daily | 30 min | 4× r5.2xlarge spot | $5/run | $150 |
+Ngân sách compute còn lại: `$5,000 - $3,500 = $1,500/tháng`. Để không vượt ngân sách $5K, pipeline sử dụng Flink và Spark trên Kubernetes Spot Instances:
 
-> ⚠️ Compute vượt budget $5K! Fix: chuyển Bronze ingest sang **Kafka→Flink→S3** thay Spark Streaming → giảm từ $7,200 xuống ~$800/month (Flink trên K8s spot). Total compute: ~$2,000/month.
+| Job | Cơ chế & Tần suất | Cấu hình & Instance | Đơn giá Spot | Chi phí/tháng |
+|---|---|---|---|---|
+| Bronze Ingestion | Apache Flink streaming (24/7) | 2× c5.2xlarge spot (K8s) | ~$0.17/giờ × 2 | **$245** |
+| Silver Micro-batch | Spark Streaming (trigger 5-phút, 2 min runtime) | 2× r5.xlarge spot | ~$0.08/giờ × 2 × 40% duty | **$46** |
+| Gold Aggregation | Spark micro-batch (5-phút, 1 min runtime) | 2× r5.xlarge spot | ~$0.08/giờ × 2 × 20% duty | **$23** |
+| Compaction & VACUUM | Cron daily (1 giờ/ngày) | 4× r5.2xlarge spot | ~$0.17/giờ × 4 × 1h/ngày | **$20** |
+| **Tổng Compute** | | | | **~$334/tháng** |
 
-**Total storage + compute: ~$3.50 + ~$2,000 = ~$2,003/month** — dưới $5,000 cap ✅
+### S3 API & Data Transfer Costs
 
-### S3 API Costs (thường bị quên)
+- **PUT/POST requests:** Flink flush mỗi 5 phút (~8,640 PUTs/ngày) + Silver/Gold writes ≈ 100K PUTs/ngày → ~$15/tháng ($0.005/1K PUT).
+- **LIST/GET operations:** Compacted partitions (~800K files) + Dashboard queries → ~$120/tháng.
+- **Tổng API/Transfer:** **~$135/tháng**.
 
-- LIST operations: 200 TB / 256 MB file = ~800,000 files → `$0.005/1000 LIST × 800K = $4/day = $120/month`
-- Total with API: **~$2,123/month**
+### Tổng Hợp Ngân Sách Hàng Tháng
+
+$$\text{Tổng chi phí} = \text{Storage } (\$3,498) + \text{Compute } (\$334) + \text{S3 API } (\$135) = \mathbf{\$3,967/\text{tháng}}$$
+
+> ✅ **Đạt yêu cầu ngân sách:** **$3,967/tháng** $\le$ **$5,000/tháng cap**, dự phòng an toàn ~20% ($1,033) cho lưu lượng spike vào các dịp cao điểm.
 
 ---
 
